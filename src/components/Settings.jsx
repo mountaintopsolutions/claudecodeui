@@ -8,6 +8,7 @@ import { useTasksSettings } from '../contexts/TasksSettingsContext';
 import StandaloneShell from './StandaloneShell';
 import ClaudeLogo from './ClaudeLogo';
 import CursorLogo from './CursorLogo';
+import CodexLogo from './CodexLogo';
 
 function Settings({ isOpen, onClose, projects = [] }) {
   const { isDarkMode, toggleDarkMode } = useTheme();
@@ -62,6 +63,12 @@ function Settings({ isOpen, onClose, projects = [] }) {
   const [newCursorCommand, setNewCursorCommand] = useState('');
   const [newCursorDisallowedCommand, setNewCursorDisallowedCommand] = useState('');
   const [cursorMcpServers, setCursorMcpServers] = useState([]);
+
+  // Codex-specific states
+  const [codexFullAuto, setCodexFullAuto] = useState(false);
+  const [codexEnableSearch, setCodexEnableSearch] = useState(false);
+  const [codexSandboxMode, setCodexSandboxMode] = useState('workspace-write');
+  const [codexDangerousBypass, setCodexDangerousBypass] = useState(false);
 
   // Login modal states
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -364,6 +371,23 @@ function Settings({ isOpen, onClose, projects = [] }) {
         setCursorSkipPermissions(false);
       }
 
+      // Load Codex settings from localStorage
+      const savedCodexSettings = localStorage.getItem('codex-tools-settings');
+
+      if (savedCodexSettings) {
+        const codexSettings = JSON.parse(savedCodexSettings);
+        setCodexFullAuto(codexSettings.fullAuto || false);
+        setCodexEnableSearch(codexSettings.enableSearch || false);
+        setCodexSandboxMode(codexSettings.sandboxMode || 'workspace-write');
+        setCodexDangerousBypass(codexSettings.dangerousBypass || false);
+      } else {
+        // Set Codex defaults
+        setCodexFullAuto(false);
+        setCodexEnableSearch(false);
+        setCodexSandboxMode('workspace-write');
+        setCodexDangerousBypass(false);
+      }
+
       // Load MCP servers from API
       await fetchMcpServers();
       
@@ -420,10 +444,20 @@ function Settings({ isOpen, onClose, projects = [] }) {
         skipPermissions: cursorSkipPermissions,
         lastUpdated: new Date().toISOString()
       };
-      
+
+      // Save Codex settings
+      const codexSettings = {
+        fullAuto: codexFullAuto,
+        enableSearch: codexEnableSearch,
+        sandboxMode: codexSandboxMode,
+        dangerousBypass: codexDangerousBypass,
+        lastUpdated: new Date().toISOString()
+      };
+
       // Save to localStorage
       localStorage.setItem('claude-settings', JSON.stringify(claudeSettings));
       localStorage.setItem('cursor-tools-settings', JSON.stringify(cursorSettings));
+      localStorage.setItem('codex-tools-settings', JSON.stringify(codexSettings));
       
       setSaveStatus('success');
       
@@ -783,6 +817,19 @@ function Settings({ isOpen, onClose, projects = [] }) {
                   <div className="flex items-center gap-2">
                     <CursorLogo className="w-4 h-4" />
                     <span>Cursor</span>
+                  </div>
+                </button>
+                <button
+                  onClick={() => setToolsProvider('codex')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                    toolsProvider === 'codex'
+                      ? 'border-green-600 text-green-600 dark:text-green-400'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <CodexLogo className="w-4 h-4" />
+                    <span>Codex</span>
                   </div>
                 </button>
               </div>
@@ -1782,6 +1829,254 @@ function Settings({ isOpen, onClose, projects = [] }) {
                     <li><code className="bg-purple-100 dark:bg-purple-800 px-1 rounded">"Shell(mkdir)"</code> - Allow mkdir command</li>
                     <li><code className="bg-purple-100 dark:bg-purple-800 px-1 rounded">"-f"</code> flag - Skip all permission prompts (dangerous)</li>
                   </ul>
+                </div>
+              </div>
+            )}
+
+            {/* Codex Content */}
+            {toolsProvider === 'codex' && (
+              <div className="space-y-6 md:space-y-8">
+
+                {/* CLI Authentication */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <Shield className="w-5 h-5 text-green-500" />
+                    <h3 className="text-lg font-medium text-foreground">
+                      Authentication
+                    </h3>
+                  </div>
+                  <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
+                    <div className="space-y-3">
+                      <div className="font-medium text-green-900 dark:text-green-100">
+                        Codex CLI Required
+                      </div>
+                      <div className="text-sm text-green-700 dark:text-green-300">
+                        Uses the Codex CLI with your existing authentication:
+                      </div>
+                      <div className="bg-green-100 dark:bg-green-800/50 rounded-lg p-3 font-mono text-sm">
+                        <code>codex login</code>
+                      </div>
+                      <div className="text-xs text-green-600 dark:text-green-400">
+                        Sign in with: <a href="https://codex.openai.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-green-700 dark:hover:text-green-300">Codex CLI</a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Model Selection */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <Zap className="w-5 h-5 text-blue-500" />
+                    <h3 className="text-lg font-medium text-foreground">
+                      Model Settings
+                    </h3>
+                  </div>
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                    <div className="space-y-3">
+                      <div className="font-medium text-blue-900 dark:text-blue-100">
+                        Available Models
+                      </div>
+                      <div className="text-sm text-blue-700 dark:text-blue-300 space-y-2">
+                        <div>• <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">gpt-5-codex</code> - Latest agentic coding model with dynamic reasoning (NEW)</div>
+                        <div>• <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">gpt-5</code> - Latest and most capable model (default)</div>
+                        <div>• <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">o3</code> - Advanced reasoning model</div>
+                      </div>
+
+                      {/* gpt-5-codex Details */}
+                      <div className="mt-4 p-3 bg-gradient-to-r from-green-100 to-blue-100 dark:from-green-900/20 dark:to-blue-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+                        <div className="font-medium text-green-900 dark:text-green-100 mb-2">
+                          GPT-5-Codex Capabilities:
+                        </div>
+                        <ul className="text-xs text-green-800 dark:text-green-200 space-y-1 list-disc list-inside">
+                          <li>Dynamic reasoning - can work for 7+ hours on complex tasks</li>
+                          <li>74.9% success rate on SWE-bench Verified (industry benchmark)</li>
+                          <li>80% fewer hallucination errors compared to O3</li>
+                          <li>Extended autonomous work capability with full-auto mode</li>
+                          <li>Optimized for agentic coding workflows</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Full-Auto Mode */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <Zap className="w-5 h-5 text-purple-500" />
+                    <h3 className="text-lg font-medium text-foreground">
+                      Autonomous Mode
+                    </h3>
+                  </div>
+                  <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-4">
+                    <label className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={codexFullAuto}
+                        onChange={(e) => setCodexFullAuto(e.target.checked)}
+                        className="w-4 h-4 text-purple-600 bg-gray-100 border-gray-300 rounded focus:ring-purple-500"
+                      />
+                      <div>
+                        <div className="font-medium text-purple-900 dark:text-purple-100">
+                          Enable Full-Auto Mode
+                        </div>
+                        <div className="text-sm text-purple-700 dark:text-purple-300">
+                          Allows Codex to work autonomously without approval prompts.
+                          <span className="font-medium"> ⚠️ Use with caution</span> - This mode gives Codex
+                          extensive freedom to execute commands and modify files.
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Advanced Options */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <SettingsIcon className="w-5 h-5 text-blue-500" />
+                    <h3 className="text-lg font-medium text-foreground">
+                      Advanced Options
+                    </h3>
+                  </div>
+
+                  {/* Web Search Toggle */}
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                    <label className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={codexEnableSearch}
+                        onChange={(e) => setCodexEnableSearch(e.target.checked)}
+                        className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                      />
+                      <div>
+                        <div className="font-medium text-blue-900 dark:text-blue-100">
+                          Enable Web Search
+                        </div>
+                        <div className="text-sm text-blue-700 dark:text-blue-300">
+                          Allow Codex to search the web for up-to-date information and resources.
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+
+                  {/* Sandbox Mode Selection */}
+                  <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+                    <div className="font-medium text-yellow-900 dark:text-yellow-100 mb-3">
+                      Sandbox Mode
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-3">
+                        <input
+                          type="radio"
+                          name="sandboxMode"
+                          value="read-only"
+                          checked={codexSandboxMode === 'read-only'}
+                          onChange={(e) => setCodexSandboxMode(e.target.value)}
+                          className="w-4 h-4 text-yellow-600 bg-gray-100 border-gray-300 focus:ring-yellow-500"
+                        />
+                        <div>
+                          <div className="font-medium text-yellow-900 dark:text-yellow-100">Read-Only</div>
+                          <div className="text-sm text-yellow-700 dark:text-yellow-300">Safe mode - can only read files and directories</div>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3">
+                        <input
+                          type="radio"
+                          name="sandboxMode"
+                          value="workspace-write"
+                          checked={codexSandboxMode === 'workspace-write'}
+                          onChange={(e) => setCodexSandboxMode(e.target.value)}
+                          className="w-4 h-4 text-yellow-600 bg-gray-100 border-gray-300 focus:ring-yellow-500"
+                        />
+                        <div>
+                          <div className="font-medium text-yellow-900 dark:text-yellow-100">Workspace Write</div>
+                          <div className="text-sm text-yellow-700 dark:text-yellow-300">Recommended - can modify files within the workspace</div>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3">
+                        <input
+                          type="radio"
+                          name="sandboxMode"
+                          value="danger-full-access"
+                          checked={codexSandboxMode === 'danger-full-access'}
+                          onChange={(e) => setCodexSandboxMode(e.target.value)}
+                          className="w-4 h-4 text-yellow-600 bg-gray-100 border-gray-300 focus:ring-yellow-500"
+                        />
+                        <div>
+                          <div className="font-medium text-yellow-900 dark:text-yellow-100">Full Access ⚠️</div>
+                          <div className="text-sm text-yellow-700 dark:text-yellow-300">Dangerous - full system access outside workspace</div>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Dangerous Bypass Mode */}
+                  <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+                    <label className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={codexDangerousBypass}
+                        onChange={(e) => setCodexDangerousBypass(e.target.checked)}
+                        className="w-4 h-4 text-red-600 bg-gray-100 border-gray-300 rounded focus:ring-red-500"
+                      />
+                      <div>
+                        <div className="font-medium text-red-900 dark:text-red-100">
+                          🚨 Dangerously Bypass All Safety
+                        </div>
+                        <div className="text-sm text-red-700 dark:text-red-300">
+                          <span className="font-bold">EXTREMELY DANGEROUS</span> - Disables all sandboxing and approval prompts.
+                          Only use in externally sandboxed environments.
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Features and Limitations */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <AlertTriangle className="w-5 h-5 text-orange-500" />
+                    <h3 className="text-lg font-medium text-foreground">
+                      Features and Limitations
+                    </h3>
+                  </div>
+                  <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg p-4">
+                    <div className="space-y-3">
+                      <div className="font-medium text-orange-900 dark:text-orange-100">
+                        What Codex Can Do:
+                      </div>
+                      <ul className="text-sm text-orange-700 dark:text-orange-300 space-y-1 list-disc list-inside">
+                        <li>Generate and complete code snippets</li>
+                        <li>Execute shell commands with approval</li>
+                        <li>Read and modify files in your workspace</li>
+                        <li>Explain existing code and suggest improvements</li>
+                        <li>Debug and fix code issues</li>
+                        <li>Translate between programming languages</li>
+                      </ul>
+                      <div className="font-medium text-orange-900 dark:text-orange-100 mt-4">
+                        Safety Features:
+                      </div>
+                      <ul className="text-sm text-orange-700 dark:text-orange-300 space-y-1 list-disc list-inside">
+                        <li>Sandboxed execution environment</li>
+                        <li>Command approval prompts for safety</li>
+                        <li>Workspace-only file access by default</li>
+                        <li>No network access unless explicitly enabled</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Help Section */}
+                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
+                  <h4 className="font-medium text-green-900 dark:text-green-100 mb-2">
+                    Getting Started with Codex:
+                  </h4>
+                  <ol className="text-sm text-green-800 dark:text-green-200 space-y-1 list-decimal list-inside">
+                    <li>Make sure you're logged in with <code className="bg-green-100 dark:bg-green-800 px-1 rounded">codex login</code></li>
+                    <li>Select Codex as your provider in the chat interface</li>
+                    <li>Choose your preferred model (GPT-5-Codex, GPT-5, or O3)</li>
+                    <li>Ask coding questions, request code generation, or file modifications</li>
+                    <li>Approve commands when prompted for security</li>
+                  </ol>
                 </div>
               </div>
             )}

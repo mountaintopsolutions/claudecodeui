@@ -8,6 +8,7 @@ import { FolderOpen, Folder, Plus, MessageSquare, Clock, ChevronDown, ChevronRig
 import { cn } from '../lib/utils';
 import ClaudeLogo from './ClaudeLogo';
 import CursorLogo from './CursorLogo.jsx';
+import CodexLogo from './CodexLogo.jsx';
 import TaskIndicator from './TaskIndicator';
 import { api } from '../utils/api';
 import { useTaskMaster } from '../contexts/TaskMasterContext';
@@ -334,12 +335,17 @@ function Sidebar({
 
   // Helper function to get all sessions for a project (initial + additional)
   const getAllSessions = (project) => {
-    // Combine Claude and Cursor sessions; Sidebar will display icon per row
+    // Combine Claude, Cursor, and Codex sessions; Sidebar will display icon per row
     const claudeSessions = [...(project.sessions || []), ...(additionalSessions[project.name] || [])].map(s => ({ ...s, __provider: 'claude' }));
     const cursorSessions = (project.cursorSessions || []).map(s => ({ ...s, __provider: 'cursor' }));
+    const codexSessions = (project.codexSessions || []).map(s => ({ ...s, __provider: 'codex' }));
     // Sort by most recent activity/date
-    const normalizeDate = (s) => new Date(s.__provider === 'cursor' ? s.createdAt : s.lastActivity);
-    return [...claudeSessions, ...cursorSessions].sort((a, b) => normalizeDate(b) - normalizeDate(a));
+    const normalizeDate = (s) => {
+      if (s.__provider === 'cursor') return new Date(s.createdAt);
+      if (s.__provider === 'codex') return new Date(s.lastActivity);
+      return new Date(s.lastActivity);
+    };
+    return [...claudeSessions, ...cursorSessions, ...codexSessions].sort((a, b) => normalizeDate(b) - normalizeDate(a));
   };
 
   // Helper function to get the last activity date for a project
@@ -431,6 +437,28 @@ function Sidebar({
     } catch (error) {
       console.error('Error deleting session:', error);
       alert('Error deleting session. Please try again.');
+    }
+  };
+
+  const updateSessionSummary = async (projectName, sessionId, newSummary) => {
+    try {
+      const response = await api.updateSessionSummary(projectName, sessionId, newSummary);
+
+      if (response.ok) {
+        // Reset editing state
+        setEditingSession(null);
+        setEditingSessionName('');
+
+        // Refresh the projects to get updated session data
+        onRefresh();
+      } else {
+        const error = await response.json();
+        console.error('Failed to update session summary:', error);
+        alert(error.error || 'Failed to update session name. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error updating session summary:', error);
+      alert('Failed to update session name. Please try again.');
     }
   };
 
@@ -1306,8 +1334,9 @@ function Sidebar({
                         </div>
                       ) : (
                         getAllSessions(project).map((session) => {
-                          // Handle both Claude and Cursor session formats
+                          // Handle Claude, Cursor, and Codex session formats
                           const isCursorSession = session.__provider === 'cursor';
+                          const isCodexSession = session.__provider === 'codex';
                           
                           // Calculate if session is active (within last 10 minutes)
                           const sessionDate = new Date(isCursorSession ? session.createdAt : session.lastActivity);
@@ -1350,9 +1379,11 @@ function Sidebar({
                                     selectedSession?.id === session.id ? "bg-primary/10" : "bg-muted/50"
                                   )}>
                                     {isCursorSession ? (
-                                      <CursorLogo className="w-3 h-3" />
+                                      <CursorLogo className="w-4 h-4" />
+                                    ) : isCodexSession ? (
+                                      <CodexLogo className="w-4 h-4" />
                                     ) : (
-                                      <ClaudeLogo className="w-3 h-3" />
+                                      <ClaudeLogo className="w-4 h-4" />
                                     )}
                                   </div>
                                   <div className="min-w-0 flex-1">
@@ -1372,9 +1403,11 @@ function Sidebar({
                                   {/* Provider tiny icon */}
                                   <span className="ml-1 opacity-70">
                                     {isCursorSession ? (
-                                      <CursorLogo className="w-3 h-3" />
+                                      <CursorLogo className="w-4 h-4" />
+                                    ) : isCodexSession ? (
+                                      <CodexLogo className="w-4 h-4" />
                                     ) : (
-                                      <ClaudeLogo className="w-3 h-3" />
+                                      <ClaudeLogo className="w-4 h-4" />
                                     )}
                                   </span>
                                     </div>
@@ -1409,9 +1442,11 @@ function Sidebar({
                               >
                                 <div className="flex items-start gap-2 min-w-0 w-full">
                                   {isCursorSession ? (
-                                    <CursorLogo className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                                    <CursorLogo className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                                  ) : isCodexSession ? (
+                                    <CodexLogo className="w-4 h-4 mt-0.5 flex-shrink-0" />
                                   ) : (
-                                    <ClaudeLogo className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                                    <ClaudeLogo className="w-4 h-4 mt-0.5 flex-shrink-0" />
                                   )}
                                   <div className="min-w-0 flex-1">
                                     <div className="text-xs font-medium truncate text-foreground">
@@ -1430,16 +1465,18 @@ function Sidebar({
                                       {/* Provider tiny icon */}
                                       <span className="ml-1 opacity-70">
                                         {isCursorSession ? (
-                                          <CursorLogo className="w-3 h-3" />
+                                          <CursorLogo className="w-4 h-4" />
+                                        ) : isCodexSession ? (
+                                          <CodexLogo className="w-4 h-4" />
                                         ) : (
-                                          <ClaudeLogo className="w-3 h-3" />
+                                          <ClaudeLogo className="w-4 h-4" />
                                         )}
                                       </span>
                                     </div>
                                   </div>
                                 </div>
                               </Button>
-                              {/* Desktop hover buttons - only for Claude sessions */}
+                              {/* Desktop hover buttons - for Claude and Codex sessions */}
                               {!isCursorSession && (
                               <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all duration-200">
                                 {editingSession === session.id ? (

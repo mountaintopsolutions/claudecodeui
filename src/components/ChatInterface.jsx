@@ -22,6 +22,7 @@ import { useDropzone } from 'react-dropzone';
 import TodoList from './TodoList';
 import ClaudeLogo from './ClaudeLogo.jsx';
 import CursorLogo from './CursorLogo.jsx';
+import CodexLogo from './CodexLogo.jsx';
 import NextTaskBanner from './NextTaskBanner.jsx';
 import { useTasksSettings } from '../contexts/TasksSettingsContext';
 
@@ -242,15 +243,21 @@ const MessageComponent = memo(({ message, index, prevMessage, createDiff, onFile
                 </div>
               ) : (
                 <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm flex-shrink-0 p-1">
-                  {(localStorage.getItem('selected-provider') || 'claude') === 'cursor' ? (
-                    <CursorLogo className="w-full h-full" />
-                  ) : (
-                    <ClaudeLogo className="w-full h-full" />
-                  )}
+                  {(() => {
+                    const provider = localStorage.getItem('selected-provider') || 'claude';
+                    if (provider === 'cursor') return <CursorLogo className="w-full h-full" />;
+                    if (provider === 'codex') return <CodexLogo className="w-full h-full" />;
+                    return <ClaudeLogo className="w-full h-full" />;
+                  })()}
                 </div>
               )}
               <div className="text-sm font-medium text-gray-900 dark:text-white">
-                {message.type === 'error' ? 'Error' : message.type === 'tool' ? 'Tool' : ((localStorage.getItem('selected-provider') || 'claude') === 'cursor' ? 'Cursor' : 'Claude')}
+                {message.type === 'error' ? 'Error' : message.type === 'tool' ? 'Tool' : (() => {
+                  const provider = localStorage.getItem('selected-provider') || 'claude';
+                  if (provider === 'cursor') return 'Cursor';
+                  if (provider === 'codex') return 'Codex';
+                  return 'Claude';
+                })()}
               </div>
             </div>
           )}
@@ -1054,9 +1061,9 @@ const MessageComponent = memo(({ message, index, prevMessage, createDiff, onFile
               <div className="text-sm text-gray-700 dark:text-gray-300">
                 {/* Thinking accordion for reasoning */}
                 {message.reasoning && (
-                  <details className="mb-3">
+                  <details className="mb-3" open={message.isStreaming}>
                     <summary className="cursor-pointer text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 font-medium">
-                      💭 Thinking...
+                      {message.isStreaming ? '💭 Thinking…' : '💭 Show reasoning'}
                     </summary>
                     <div className="mt-2 pl-4 border-l-2 border-gray-300 dark:border-gray-600 italic text-gray-600 dark:text-gray-400 text-sm">
                       <div className="whitespace-pre-wrap">
@@ -1201,6 +1208,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
   const scrollContainerRef = useRef(null);
   // Streaming throttle buffers
   const streamBufferRef = useRef('');
+  const streamingAssistantRef = useRef(false);
   const streamTimerRef = useRef(null);
   const [debouncedInput, setDebouncedInput] = useState('');
   const [showFileDropdown, setShowFileDropdown] = useState(false);
@@ -1225,6 +1233,9 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
   });
   const [cursorModel, setCursorModel] = useState(() => {
     return localStorage.getItem('cursor-model') || 'gpt-5';
+  });
+  const [codexModel, setCodexModel] = useState(() => {
+    return localStorage.getItem('codex-model') || 'gpt-5-codex';
   });
   // When selecting a session from Sidebar, auto-switch provider to match session's origin
   useEffect(() => {
@@ -1682,8 +1693,11 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     
     // First pass: collect all tool results
     for (const msg of rawMessages) {
-      if (msg.message?.role === 'user' && Array.isArray(msg.message?.content)) {
-        for (const part of msg.message.content) {
+      const userRole = msg.message?.role === 'user' || msg.role === 'user';
+      const userContent = msg.message?.content || msg.content;
+
+      if (userRole && Array.isArray(userContent)) {
+        for (const part of userContent) {
           if (part.type === 'tool_result') {
             toolResults.set(part.tool_use_id, {
               content: part.content,
@@ -1697,29 +1711,32 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     
     // Second pass: process messages and attach tool results to tool uses
     for (const msg of rawMessages) {
-      // Handle user messages
-      if (msg.message?.role === 'user' && msg.message?.content) {
+      // Handle user messages - support both formats (Claude: msg.message.role, Codex: msg.role)
+      const userRole = msg.message?.role === 'user' || msg.role === 'user';
+      const userContent = msg.message?.content || msg.content;
+
+      if (userRole && userContent) {
         let content = '';
         let messageType = 'user';
-        
-        if (Array.isArray(msg.message.content)) {
+
+        if (Array.isArray(userContent)) {
           // Handle array content, but skip tool results (they're attached to tool uses)
           const textParts = [];
-          
-          for (const part of msg.message.content) {
+
+          for (const part of userContent) {
             if (part.type === 'text') {
               textParts.push(part.text);
             }
             // Skip tool_result parts - they're handled in the first pass
           }
-          
+
           content = textParts.join('\n');
-        } else if (typeof msg.message.content === 'string') {
-          content = msg.message.content;
+        } else if (typeof userContent === 'string') {
+          content = userContent;
         } else {
-          content = String(msg.message.content);
+          content = String(userContent);
         }
-        
+
         // Skip command messages and empty content
         if (content && !content.startsWith('<command-name>') && !content.startsWith('[Request interrupted')) {
           converted.push({
@@ -1730,10 +1747,13 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
         }
       }
       
-      // Handle assistant messages
-      else if (msg.message?.role === 'assistant' && msg.message?.content) {
-        if (Array.isArray(msg.message.content)) {
-          for (const part of msg.message.content) {
+      // Handle assistant messages - support both formats (Claude: msg.message.role, Codex: msg.role)
+      const assistantRole = msg.message?.role === 'assistant' || msg.role === 'assistant';
+      const assistantContent = msg.message?.content || msg.content;
+
+      if (assistantRole && assistantContent) {
+        if (Array.isArray(assistantContent)) {
+          for (const part of assistantContent) {
             if (part.type === 'text') {
               converted.push({
                 type: 'assistant',
@@ -1743,7 +1763,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             } else if (part.type === 'tool_use') {
               // Get the corresponding tool result
               const toolResult = toolResults.get(part.id);
-              
+
               converted.push({
                 type: 'assistant',
                 content: '',
@@ -1757,10 +1777,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
               });
             }
           }
-        } else if (typeof msg.message.content === 'string') {
+        } else if (typeof assistantContent === 'string') {
           converted.push({
             type: 'assistant',
-            content: msg.message.content,
+            content: assistantContent,
             timestamp: msg.timestamp || new Date().toISOString()
           });
         }
@@ -1842,7 +1862,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           // For Cursor, set the session ID for resuming
           setCurrentSessionId(selectedSession.id);
           sessionStorage.setItem('cursorSessionId', selectedSession.id);
-          
+
           // Only load messages from SQLite if this is NOT a system-initiated session change
           // For system-initiated changes, preserve existing messages
           if (!isSystemSessionChange) {
@@ -1855,10 +1875,28 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             // Reset the flag after handling system session change
             setIsSystemSessionChange(false);
           }
+        } else if (provider === 'codex') {
+          // For Codex, set the session ID for resuming
+          setCurrentSessionId(selectedSession.id);
+          sessionStorage.setItem('codexSessionId', selectedSession.id);
+
+          // Only load messages from API if this is a user-initiated session change
+          if (!isSystemSessionChange) {
+            const messages = await loadSessionMessages(selectedProject.name, selectedSession.id, false);
+            setSessionMessages(messages);
+            // convertedMessages will be automatically updated via useMemo
+            // Scroll to bottom after loading session messages if auto-scroll is enabled
+            if (autoScrollToBottom) {
+              setTimeout(() => scrollToBottom(), 200);
+            }
+          } else {
+            // Reset the flag after handling system session change
+            setIsSystemSessionChange(false);
+          }
         } else {
           // For Claude, load messages normally with pagination
           setCurrentSessionId(selectedSession.id);
-          
+
           // Only load messages from API if this is a user-initiated session change
           // For system-initiated changes, preserve existing messages and rely on WebSocket
           if (!isSystemSessionChange) {
@@ -1883,6 +1921,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
         }
         setCurrentSessionId(null);
         sessionStorage.removeItem('cursorSessionId');
+        sessionStorage.removeItem('codexSessionId');
         setMessagesOffset(0);
         setHasMoreMessages(false);
         setTotalMessages(0);
@@ -1894,7 +1933,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
 
   // Update chatMessages when convertedMessages changes
   useEffect(() => {
-    if (sessionMessages.length > 0) {
+    if (sessionMessages.length > 0 && !streamingAssistantRef.current) {
       setChatMessages(convertedMessages);
     }
   }, [convertedMessages, sessionMessages]);
@@ -2135,7 +2174,70 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             }
           }
           break;
-          
+
+        case 'codex-response':
+          const codexMessageData = latestMessage.data.message || latestMessage.data;
+
+          // Handle Codex streaming format (content_block_delta / content_block_stop)
+          if (codexMessageData && typeof codexMessageData === 'object' && codexMessageData.type) {
+            if (codexMessageData.type === 'content_block_delta' && codexMessageData.delta?.text) {
+              streamingAssistantRef.current = true;
+              // Buffer deltas and flush periodically to reduce rerenders
+              streamBufferRef.current += codexMessageData.delta.text;
+              if (!streamTimerRef.current) {
+                streamTimerRef.current = setTimeout(() => {
+                  const chunk = streamBufferRef.current;
+                  streamBufferRef.current = '';
+                  streamTimerRef.current = null;
+                  if (!chunk) return;
+                  setChatMessages(prev => {
+                    const updated = [...prev];
+                    const last = updated[updated.length - 1];
+                    if (last && last.type === 'assistant' && !last.isToolUse && last.isStreaming) {
+                      last.content = (last.content || '') + chunk;
+                    } else {
+                      updated.push({ type: 'assistant', content: chunk, timestamp: new Date(), isStreaming: true });
+                    }
+                    return updated;
+                  });
+                }, 100);
+              }
+              return;
+            }
+            if (codexMessageData.type === 'content_block_stop') {
+              // Flush any buffered text and mark streaming message complete
+              if (streamTimerRef.current) {
+                clearTimeout(streamTimerRef.current);
+                streamTimerRef.current = null;
+              }
+              const chunk = streamBufferRef.current;
+              streamBufferRef.current = '';
+              if (chunk) {
+                setChatMessages(prev => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last && last.type === 'assistant' && !last.isToolUse && last.isStreaming) {
+                    last.content = (last.content || '') + chunk;
+                  } else {
+                    updated.push({ type: 'assistant', content: chunk, timestamp: new Date(), isStreaming: true });
+                  }
+                  return updated;
+                });
+              }
+              setChatMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.type === 'assistant' && last.isStreaming) {
+                  last.isStreaming = false;
+                }
+                return updated;
+              });
+              streamingAssistantRef.current = false;
+              return;
+            }
+          }
+          break;
+
         case 'claude-output':
           {
             const cleaned = String(latestMessage.data || '');
@@ -2280,9 +2382,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           if (cursorSessionId && !currentSessionId) {
             setCurrentSessionId(cursorSessionId);
             sessionStorage.removeItem('pendingSessionId');
-            
-            // Trigger a project refresh to update the sidebar with the new session
-            if (window.refreshProjects) {
+
+            // Only refresh projects when we actually create a new session
+            // (when isNewSession is true from the server)
+            if (latestMessage.isNewSession && window.refreshProjects) {
               setTimeout(() => window.refreshProjects(), 500);
             }
           }
@@ -2338,9 +2441,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           if (pendingSessionId && !currentSessionId && latestMessage.exitCode === 0) {
                 setCurrentSessionId(pendingSessionId);
             sessionStorage.removeItem('pendingSessionId');
-            
-            // Trigger a project refresh to update the sidebar with the new session
-            if (window.refreshProjects) {
+
+            // Only refresh projects when we actually create a new session
+            // (when isNewSession is true from the server)
+            if (latestMessage.isNewSession && window.refreshProjects) {
               setTimeout(() => window.refreshProjects(), 500);
             }
           }
@@ -2350,7 +2454,72 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             safeLocalStorage.removeItem(`chat_messages_${selectedProject.name}`);
           }
           break;
-          
+
+        case 'codex-complete':
+          setIsLoading(false);
+          setCanAbortSession(false);
+          setClaudeStatus(null);
+
+          streamingAssistantRef.current = false;
+
+          // Session Protection: Mark session as inactive to re-enable automatic project updates
+          const codexActiveSessionId = currentSessionId || sessionStorage.getItem('pendingSessionId');
+          if (codexActiveSessionId && onSessionInactive) {
+            onSessionInactive(codexActiveSessionId);
+          }
+
+          // Handle new session creation for Codex
+          const codexPendingSessionId = sessionStorage.getItem('pendingSessionId');
+          if (codexPendingSessionId && !currentSessionId && latestMessage.exitCode === 0) {
+            setCurrentSessionId(codexPendingSessionId);
+            sessionStorage.removeItem('pendingSessionId');
+
+            // Only refresh projects when we actually create a new session
+            // (when isNewSession is true from the server)
+            if (latestMessage.isNewSession && window.refreshProjects) {
+              setTimeout(() => window.refreshProjects(), 500);
+            }
+          }
+
+          // Clear persisted chat messages after successful completion
+          if (selectedProject && latestMessage.exitCode === 0) {
+            safeLocalStorage.removeItem(`chat_messages_${selectedProject.name}`);
+          }
+          break;
+
+        case 'codex-error':
+          streamingAssistantRef.current = false;
+          setChatMessages(prev => [...prev, {
+            type: 'assistant',
+            content: `Error: ${latestMessage.error}`,
+            isError: true,
+            timestamp: new Date()
+          }]);
+          break;
+
+        case 'codex-reasoning':
+          streamingAssistantRef.current = true;
+          // Handle thinking/reasoning content from Codex
+          setChatMessages(prev => {
+            const updated = [...prev];
+            const last = updated[updated.length - 1];
+            if (last && last.type === 'assistant' && !last.isToolUse && last.isStreaming) {
+              // Add reasoning to the in-progress assistant message
+              last.reasoning = (last.reasoning || '') + latestMessage.data.reasoning;
+            } else {
+              // Create new message to stream reasoning and upcoming response together
+              updated.push({
+                type: 'assistant',
+                content: '',
+                reasoning: latestMessage.data.reasoning,
+                isStreaming: true,
+                timestamp: new Date()
+              });
+            }
+            return updated;
+          });
+          break;
+
         case 'session-aborted':
           setIsLoading(false);
           setCanAbortSession(false);
@@ -2735,7 +2904,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     setTimeout(() => scrollToBottom(), 100); // Longer delay to ensure message is rendered
 
     // Determine effective session id for replies to avoid race on state updates
-    const effectiveSessionId = currentSessionId || selectedSession?.id || sessionStorage.getItem('cursorSessionId');
+    const effectiveSessionId = currentSessionId || selectedSession?.id || sessionStorage.getItem('cursorSessionId') || sessionStorage.getItem('codexSessionId');
 
     // Session Protection: Mark session as active to prevent automatic project updates during conversation
     // Use existing session if available; otherwise a temporary placeholder until backend provides real ID
@@ -2747,7 +2916,15 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     // Get tools settings from localStorage based on provider
     const getToolsSettings = () => {
       try {
-        const settingsKey = provider === 'cursor' ? 'cursor-tools-settings' : 'claude-settings';
+        let settingsKey;
+        if (provider === 'cursor') {
+          settingsKey = 'cursor-tools-settings';
+        } else if (provider === 'codex') {
+          settingsKey = 'codex-tools-settings';
+        } else {
+          settingsKey = 'claude-settings';
+        }
+
         const savedSettings = safeLocalStorage.getItem(settingsKey);
         if (savedSettings) {
           return JSON.parse(savedSettings);
@@ -2758,7 +2935,11 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
       return {
         allowedTools: [],
         disallowedTools: [],
-        skipPermissions: false
+        skipPermissions: false,
+        fullAuto: false,
+        enableSearch: false,
+        sandboxMode: 'workspace-write',
+        dangerousBypass: false
       };
     };
 
@@ -2780,6 +2961,22 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           model: cursorModel,
           skipPermissions: toolsSettings?.skipPermissions || false,
           toolsSettings: toolsSettings
+        }
+      });
+    } else if (provider === 'codex') {
+      // Send Codex command
+      sendMessage({
+        type: 'codex-command',
+        command: input,
+        sessionId: effectiveSessionId,
+        options: {
+          cwd: selectedProject.fullPath || selectedProject.path,
+          projectPath: selectedProject.fullPath || selectedProject.path,
+          sessionId: effectiveSessionId,
+          resume: !!effectiveSessionId,
+          model: codexModel,
+          toolsSettings: toolsSettings,
+          images: uploadedImages // Pass images to backend (though Codex can't process them)
         }
       });
     } else {
@@ -3068,6 +3265,38 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
                       </div>
                     )}
                   </button>
+
+                  {/* Codex Button */}
+                  <button
+                    onClick={() => {
+                      setProvider('codex');
+                      localStorage.setItem('selected-provider', 'codex');
+                      // Focus input after selection
+                      setTimeout(() => textareaRef.current?.focus(), 100);
+                    }}
+                    className={`group relative w-64 h-32 bg-white dark:bg-gray-800 rounded-xl border-2 transition-all duration-200 hover:scale-105 hover:shadow-xl ${
+                      provider === 'codex'
+                        ? 'border-green-500 shadow-lg ring-2 ring-green-500/20'
+                        : 'border-gray-200 dark:border-gray-700 hover:border-green-400'
+                    }`}
+                  >
+                    <div className="flex flex-col items-center justify-center h-full gap-3">
+                      <CodexLogo className="w-10 h-10" />
+                      <div>
+                        <p className="font-semibold text-gray-900 dark:text-white">Codex</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">by OpenAI</p>
+                      </div>
+                    </div>
+                    {provider === 'codex' && (
+                      <div className="absolute top-2 right-2">
+                        <div className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
+                          <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                          </svg>
+                        </div>
+                      </div>
+                    )}
+                  </button>
                 </div>
                 
                 {/* Model Selection for Cursor - Always reserve space to prevent jumping */}
@@ -3090,12 +3319,35 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
                     <option value="opus-4.1">Opus 4.1</option>
                   </select>
                 </div>
-                
+
+                {/* Model Selection for Codex - Always reserve space to prevent jumping */}
+                <div className={`mb-6 transition-opacity duration-200 ${provider === 'codex' ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    {provider === 'codex' ? 'Select Model' : '\u00A0'}
+                  </label>
+                  <select
+                    value={codexModel}
+                    onChange={(e) => {
+                      const newModel = e.target.value;
+                      setCodexModel(newModel);
+                      localStorage.setItem('codex-model', newModel);
+                    }}
+                    className="pl-4 pr-10 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 min-w-[140px]"
+                    disabled={provider !== 'codex'}
+                  >
+                    <option value="gpt-5-codex">GPT-5-Codex (Latest)</option>
+                    <option value="gpt-5">GPT-5</option>
+                    <option value="o3">O3</option>
+                  </select>
+                </div>
+
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  {provider === 'claude' 
+                  {provider === 'claude'
                     ? 'Ready to use Claude AI. Start typing your message below.'
                     : provider === 'cursor'
                     ? `Ready to use Cursor with ${cursorModel}. Start typing your message below.`
+                    : provider === 'codex'
+                    ? `Ready to use Codex with ${codexModel}. Start typing your message below.`
                     : 'Select a provider above to begin'
                   }
                 </p>
@@ -3192,13 +3444,19 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             <div className="w-full">
               <div className="flex items-center space-x-3 mb-2">
                 <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm flex-shrink-0 p-1 bg-transparent">
-                  {(localStorage.getItem('selected-provider') || 'claude') === 'cursor' ? (
-                    <CursorLogo className="w-full h-full" />
-                  ) : (
-                    <ClaudeLogo className="w-full h-full" />
-                  )}
+                  {(() => {
+                    const provider = localStorage.getItem('selected-provider') || 'claude';
+                    if (provider === 'cursor') return <CursorLogo className="w-full h-full" />;
+                    if (provider === 'codex') return <CodexLogo className="w-full h-full" />;
+                    return <ClaudeLogo className="w-full h-full" />;
+                  })()}
                 </div>
-                <div className="text-sm font-medium text-gray-900 dark:text-white">{(localStorage.getItem('selected-provider') || 'claude') === 'cursor' ? 'Cursor' : 'Claude'}</div>
+                <div className="text-sm font-medium text-gray-900 dark:text-white">{(() => {
+                  const provider = localStorage.getItem('selected-provider') || 'claude';
+                  if (provider === 'cursor') return 'Cursor';
+                  if (provider === 'codex') return 'Codex';
+                  return 'Claude';
+                })()}</div>
                 {/* Abort button removed - functionality not yet implemented at backend */}
               </div>
               <div className="w-full text-sm text-gray-500 dark:text-gray-400 pl-3 sm:pl-0">

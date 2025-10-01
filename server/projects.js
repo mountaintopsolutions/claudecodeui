@@ -425,6 +425,17 @@ async function getProjects() {
           console.warn(`Could not load Cursor sessions for project ${entry.name}:`, e.message);
           project.cursorSessions = [];
         }
+
+        // Also fetch Codex sessions for this project
+        try {
+          const allCodexSessions = await getCodexSessions();
+          project.codexSessions = allCodexSessions.filter(session =>
+            session.cwd && session.cwd === actualProjectDir
+          );
+        } catch (e) {
+          console.warn(`Could not load Codex sessions for project ${entry.name}:`, e.message);
+          project.codexSessions = [];
+        }
         
         // Add TaskMaster detection
         try {
@@ -478,7 +489,8 @@ async function getProjects() {
           isCustomName: !!projectConfig.displayName,
           isManuallyAdded: true,
           sessions: [],
-          cursorSessions: []
+          cursorSessions: [],
+          codexSessions: []
         };
       
       // Try to fetch Cursor sessions for manual projects too
@@ -486,6 +498,17 @@ async function getProjects() {
         project.cursorSessions = await getCursorSessions(actualProjectDir);
       } catch (e) {
         console.warn(`Could not load Cursor sessions for manual project ${projectName}:`, e.message);
+      }
+
+      // Try to fetch Codex sessions for manual projects too
+      try {
+        const allCodexSessions = await getCodexSessions();
+        project.codexSessions = allCodexSessions.filter(session =>
+          session.cwd && session.cwd === actualProjectDir
+        );
+      } catch (e) {
+        console.warn(`Could not load Codex sessions for manual project ${projectName}:`, e.message);
+        project.codexSessions = [];
       }
       
       // Add TaskMaster detection for manual projects
@@ -859,6 +882,150 @@ async function isProjectEmpty(projectName) {
   }
 }
 
+async function updateSessionSummary(projectName, sessionId, newSummary) {
+  // First try Claude sessions
+  const claudeProjectDir = path.join(process.env.HOME, '.claude', 'projects', projectName);
+
+  try {
+    // Check if Claude project directory exists
+    try {
+      await fs.access(claudeProjectDir);
+
+      const files = await fs.readdir(claudeProjectDir);
+      const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
+
+      // Check all JSONL files to find which one contains the session
+      for (const file of jsonlFiles) {
+        const jsonlFile = path.join(claudeProjectDir, file);
+        const content = await fs.readFile(jsonlFile, 'utf8');
+        const lines = content.split('\n').filter(line => line.trim());
+
+        // Check if this file contains the session
+        const hasSession = lines.some(line => {
+          try {
+            const data = JSON.parse(line);
+            return data.type === 'session_metadata' && data.id === sessionId;
+          } catch {
+            return false;
+          }
+        });
+
+        if (hasSession) {
+          // Update the session metadata in this file
+          const updatedLines = lines.map(line => {
+            try {
+              const data = JSON.parse(line);
+              if (data.type === 'session_metadata' && data.id === sessionId) {
+                // Update the summary
+                data.summary = newSummary;
+                return JSON.stringify(data);
+              }
+              return line;
+            } catch {
+              return line;
+            }
+          });
+
+          // Write the updated content back to the file
+          await fs.writeFile(jsonlFile, updatedLines.join('\n') + '\n', 'utf8');
+          return true;
+        }
+      }
+    } catch (claudeError) {
+      // Claude directory doesn't exist or no access, try Codex
+    }
+
+    // Try Codex sessions - they're stored in ~/.codex/sessions/ with nested structure
+    const codexBaseDir = path.join(process.env.HOME, '.codex', 'sessions');
+
+    try {
+      await fs.access(codexBaseDir);
+
+      // Get current working directory for this project
+      const currentWorkDir = process.cwd();
+
+      // Traverse through year/month/day structure to find the session
+      const yearDirs = await fs.readdir(codexBaseDir);
+
+      for (const yearDir of yearDirs) {
+        if (!/^\d{4}$/.test(yearDir)) continue;
+
+        const yearPath = path.join(codexBaseDir, yearDir);
+        const monthDirs = await fs.readdir(yearPath);
+
+        for (const monthDir of monthDirs) {
+          if (!/^\d{2}$/.test(monthDir)) continue;
+
+          const monthPath = path.join(yearPath, monthDir);
+          const dayDirs = await fs.readdir(monthPath);
+
+          for (const dayDir of dayDirs) {
+            if (!/^\d{2}$/.test(dayDir)) continue;
+
+            const dayPath = path.join(monthPath, dayDir);
+            const sessionFiles = await fs.readdir(dayPath);
+
+            // Look for session files that match the sessionId
+            for (const sessionFile of sessionFiles) {
+              if (sessionFile.includes(sessionId) && sessionFile.endsWith('.jsonl')) {
+                const sessionFilePath = path.join(dayPath, sessionFile);
+                const content = await fs.readFile(sessionFilePath, 'utf8');
+                const lines = content.split('\n').filter(line => line.trim());
+
+                // Check if this is the right session and the project matches
+                let isRightSession = false;
+                let sessionFound = false;
+
+                for (const line of lines) {
+                  try {
+                    const data = JSON.parse(line);
+                    if (data.type === 'session_meta' && data.payload && data.payload.id === sessionId) {
+                      // Check if the cwd matches our project directory
+                      if (data.payload.cwd === currentWorkDir) {
+                        sessionFound = true;
+                        // Create metadata file to store custom summary
+                        const metadataPath = path.join(process.env.HOME, '.claude', 'codex_session_metadata.json');
+
+                        let metadata = {};
+                        try {
+                          const existingMetadata = await fs.readFile(metadataPath, 'utf8');
+                          metadata = JSON.parse(existingMetadata);
+                        } catch {
+                          // File doesn't exist, start with empty metadata
+                        }
+
+                        // Store the custom summary
+                        metadata[sessionId] = { summary: newSummary };
+
+                        // Write back the metadata
+                        await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+                        return true;
+                      }
+                    }
+                  } catch {
+                    continue;
+                  }
+                }
+
+                if (sessionFound) {
+                  return true;
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (codexError) {
+      // Codex directory doesn't exist
+    }
+
+    throw new Error(`Session ${sessionId} not found in project ${projectName}`);
+  } catch (error) {
+    console.error(`Error updating session summary for ${sessionId}:`, error);
+    throw error;
+  }
+}
+
 // Delete an empty project
 async function deleteProject(projectName) {
   const projectDir = path.join(process.env.HOME, '.claude', 'projects', projectName);
@@ -1045,6 +1212,282 @@ async function getCursorSessions(projectPath) {
   }
 }
 
+async function getCodexSessions() {
+  try {
+    const codexSessionsPath = path.join(os.homedir(), '.codex', 'sessions');
+
+    // Check if the sessions directory exists
+    try {
+      await fs.access(codexSessionsPath);
+    } catch (error) {
+      // No Codex sessions directory
+      return [];
+    }
+
+    const sessions = [];
+
+    // Read all year directories (e.g., 2025)
+    const yearDirs = await fs.readdir(codexSessionsPath);
+
+    for (const yearDir of yearDirs) {
+      const yearPath = path.join(codexSessionsPath, yearDir);
+
+      try {
+        const yearStat = await fs.stat(yearPath);
+        if (!yearStat.isDirectory()) continue;
+
+        // Read month directories (e.g., 09)
+        const monthDirs = await fs.readdir(yearPath);
+
+        for (const monthDir of monthDirs) {
+          const monthPath = path.join(yearPath, monthDir);
+
+          try {
+            const monthStat = await fs.stat(monthPath);
+            if (!monthStat.isDirectory()) continue;
+
+            // Read day directories (e.g., 16)
+            const dayDirs = await fs.readdir(monthPath);
+
+            for (const dayDir of dayDirs) {
+              const dayPath = path.join(monthPath, dayDir);
+
+              try {
+                const dayStat = await fs.stat(dayPath);
+                if (!dayStat.isDirectory()) continue;
+
+                // Read session files in this date directory
+                const sessionFiles = await fs.readdir(dayPath);
+
+                for (const sessionFile of sessionFiles) {
+                  if (!sessionFile.endsWith('.jsonl')) continue;
+
+                  const sessionPath = path.join(dayPath, sessionFile);
+
+          try {
+            // Read the session file and extract metadata
+            const sessionContent = await fs.readFile(sessionPath, 'utf8');
+            const lines = sessionContent.trim().split('\n').filter(line => line.trim());
+
+            let sessionMeta = null;
+            let messageCount = 0;
+            let userMessages = [];
+
+            for (const line of lines) {
+              try {
+                const entry = JSON.parse(line);
+
+                if (entry.type === 'session_meta') {
+                  sessionMeta = entry.payload;
+                } else if (entry.type === 'response_item' && entry.payload?.role === 'user') {
+                  messageCount++;
+                  // Extract user message text for title
+                  const content = entry.payload?.content?.[0]?.text;
+                  if (content && !content.includes('<environment_context>')) {
+                    userMessages.push(content);
+                  }
+                }
+              } catch (parseError) {
+                // Skip invalid lines
+              }
+            }
+
+            if (sessionMeta) {
+              // Get file stats for fallback timestamp
+              const fileStats = await fs.stat(sessionPath);
+              const fileTimestamp = fileStats.mtime.toISOString();
+
+              // Use sessionMeta.timestamp if available, otherwise fall back to file mtime
+              const timestamp = sessionMeta.timestamp || fileTimestamp;
+
+              // Check for custom summary in metadata file
+              let title = userMessages.length > 0
+                ? userMessages[0].slice(0, 50) + (userMessages[0].length > 50 ? '...' : '')
+                : sessionMeta.id.slice(0, 8) + '...';
+
+              // Try to load custom summary from metadata file
+              try {
+                const metadataPath = path.join(process.env.HOME, '.claude', 'codex_session_metadata.json');
+                const metadataContent = await fs.readFile(metadataPath, 'utf8');
+                const metadata = JSON.parse(metadataContent);
+
+                if (metadata[sessionMeta.id] && metadata[sessionMeta.id].summary) {
+                  title = metadata[sessionMeta.id].summary;
+                }
+              } catch {
+                // No custom metadata, use default title
+              }
+
+              sessions.push({
+                id: sessionMeta.id,
+                title: title,
+                summary: title, // Add summary field for compatibility
+                createdAt: timestamp,
+                lastMessage: timestamp,
+                lastActivity: timestamp, // Add lastActivity for UI compatibility
+                messageCount: messageCount,
+                provider: 'codex',
+                cwd: sessionMeta.cwd,
+                gitInfo: sessionMeta.git,
+                __provider: 'codex' // Add provider marker for UI
+              });
+            }
+
+                  } catch (sessionError) {
+                    console.warn(`Could not read Codex session ${sessionFile}:`, sessionError.message);
+                  }
+                }
+
+              } catch (dayError) {
+                console.warn(`Could not read Codex day directory ${dayDir}:`, dayError.message);
+              }
+            }
+
+          } catch (monthError) {
+            console.warn(`Could not read Codex month directory ${monthDir}:`, monthError.message);
+          }
+        }
+
+      } catch (yearError) {
+        console.warn(`Could not read Codex year directory ${yearDir}:`, yearError.message);
+      }
+    }
+
+    // Sort sessions by creation time (newest first)
+    sessions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Return only the first 5 sessions for performance
+    return sessions.slice(0, 5);
+
+  } catch (error) {
+    console.error('Error fetching Codex sessions:', error);
+    return [];
+  }
+}
+
+async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
+  try {
+    const codexSessionsPath = path.join(os.homedir(), '.codex', 'sessions');
+
+    // Find the session file by searching through nested date directories (year/month/day)
+    const yearDirs = await fs.readdir(codexSessionsPath);
+
+    for (const yearDir of yearDirs) {
+      const yearPath = path.join(codexSessionsPath, yearDir);
+
+      try {
+        const yearStat = await fs.stat(yearPath);
+        if (!yearStat.isDirectory()) continue;
+
+        const monthDirs = await fs.readdir(yearPath);
+
+        for (const monthDir of monthDirs) {
+          const monthPath = path.join(yearPath, monthDir);
+
+          try {
+            const monthStat = await fs.stat(monthPath);
+            if (!monthStat.isDirectory()) continue;
+
+            const dayDirs = await fs.readdir(monthPath);
+
+            for (const dayDir of dayDirs) {
+              const dayPath = path.join(monthPath, dayDir);
+
+              try {
+                const dayStat = await fs.stat(dayPath);
+                if (!dayStat.isDirectory()) continue;
+
+                const sessionFiles = await fs.readdir(dayPath);
+
+                for (const sessionFile of sessionFiles) {
+                  if (!sessionFile.includes(sessionId)) continue;
+
+                  const sessionPath = path.join(dayPath, sessionFile);
+
+          try {
+            const sessionContent = await fs.readFile(sessionPath, 'utf8');
+            const lines = sessionContent.trim().split('\n').filter(line => line.trim());
+
+            const messages = [];
+
+            for (const line of lines) {
+              try {
+                const entry = JSON.parse(line);
+
+                if (entry.type === 'response_item') {
+                  const payload = entry.payload;
+
+                  if (payload.role === 'user') {
+                    // Extract user message
+                    const content = payload.content?.[0]?.text;
+                    if (content && !content.includes('<environment_context>')) {
+                      messages.push({
+                        id: `user_${entry.timestamp}`,
+                        role: 'user',
+                        content: content,
+                        timestamp: entry.timestamp
+                      });
+                    }
+                  } else if (payload.role === 'assistant') {
+                    // Extract assistant message
+                    const content = payload.content?.[0]?.text;
+                    if (content) {
+                      messages.push({
+                        id: `assistant_${entry.timestamp}`,
+                        role: 'assistant',
+                        content: content,
+                        timestamp: entry.timestamp
+                      });
+                    }
+                  }
+                }
+
+              } catch (parseError) {
+                // Skip invalid lines
+              }
+            }
+
+            // Apply pagination
+            const total = messages.length;
+            const startIndex = offset;
+            const endIndex = limit ? Math.min(startIndex + limit, total) : total;
+            const paginatedMessages = messages.slice(startIndex, endIndex);
+
+            return {
+              messages: paginatedMessages,
+              hasMore: endIndex < total,
+              total: total
+            };
+
+                  } catch (sessionError) {
+                    console.warn(`Could not read Codex session ${sessionFile}:`, sessionError.message);
+                  }
+                }
+
+              } catch (dayError) {
+                console.warn(`Could not read Codex day directory ${dayDir}:`, dayError.message);
+              }
+            }
+
+          } catch (monthError) {
+            console.warn(`Could not read Codex month directory ${monthDir}:`, monthError.message);
+          }
+        }
+
+      } catch (yearError) {
+        console.warn(`Could not read Codex year directory ${yearDir}:`, yearError.message);
+      }
+    }
+
+    // Session not found
+    return { messages: [], hasMore: false, total: 0 };
+
+  } catch (error) {
+    console.error('Error fetching Codex session messages:', error);
+    return { messages: [], hasMore: false, total: 0 };
+  }
+}
+
 
 export {
   getProjects,
@@ -1053,11 +1496,14 @@ export {
   parseJsonlSessions,
   renameProject,
   deleteSession,
+  updateSessionSummary,
   isProjectEmpty,
   deleteProject,
   addProjectManually,
   loadProjectConfig,
   saveProjectConfig,
   extractProjectDirectory,
-  clearProjectDirectoryCache
+  clearProjectDirectoryCache,
+  getCodexSessions,
+  getCodexSessionMessages
 };

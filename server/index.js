@@ -37,9 +37,10 @@ import pty from 'node-pty';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 
-import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache } from './projects.js';
+import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, updateSessionSummary, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache } from './projects.js';
 import { spawnClaude, abortClaudeSession } from './claude-cli.js';
 import { spawnCursor, abortCursorSession } from './cursor-cli.js';
+import { spawnCodex, abortCodexSession } from './codex-cli.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
 import mcpRoutes from './routes/mcp.js';
@@ -221,6 +222,31 @@ app.get('/api/projects/:projectName/sessions', authenticateToken, async (req, re
     try {
         const { limit = 5, offset = 0 } = req.query;
         const result = await getSessions(req.params.projectName, parseInt(limit), parseInt(offset));
+
+        // Always include Codex sessions for the project
+        try {
+            const { getCodexSessions } = await import('./projects.js');
+            const path = await import('path');
+
+            // Use the actual project path instead of extractProjectDirectory
+            // This assumes the project name matches the directory name
+            const projectPath = process.cwd();
+            const allCodexSessions = await getCodexSessions();
+
+            // Filter Codex sessions by project path (cwd)
+            const codexSessions = allCodexSessions.filter(session =>
+                session.cwd && session.cwd === projectPath
+            );
+
+            // Add codexSessions to response
+            result.codexSessions = codexSessions;
+            result.success = true;
+        } catch (codexError) {
+            console.error('Error loading Codex sessions:', codexError);
+            result.codexSessions = [];
+            result.success = true; // Still return success for Claude sessions
+        }
+
         res.json(result);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -237,8 +263,21 @@ app.get('/api/projects/:projectName/sessions/:sessionId/messages', authenticateT
         const parsedLimit = limit ? parseInt(limit, 10) : null;
         const parsedOffset = offset ? parseInt(offset, 10) : 0;
         
-        const result = await getSessionMessages(projectName, sessionId, parsedLimit, parsedOffset);
-        
+        // Try to get Claude/project-specific session messages first
+        let result;
+        try {
+            result = await getSessionMessages(projectName, sessionId, parsedLimit, parsedOffset);
+        } catch (error) {
+            console.log(`Claude session not found for ${sessionId}, trying Codex...`);
+            result = { messages: [] };
+        }
+
+        // If no messages found in project sessions, try Codex sessions
+        if ((!result.messages || result.messages.length === 0) && (!Array.isArray(result) || result.length === 0)) {
+            const { getCodexSessionMessages } = await import('./projects.js');
+            result = await getCodexSessionMessages(sessionId, parsedLimit, parsedOffset);
+        }
+
         // Handle both old and new response formats
         if (Array.isArray(result)) {
             // Backward compatibility: no pagination parameters were provided
@@ -259,6 +298,24 @@ app.put('/api/projects/:projectName/rename', authenticateToken, async (req, res)
         await renameProject(req.params.projectName, displayName);
         res.json({ success: true });
     } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update session summary endpoint
+app.put('/api/projects/:projectName/sessions/:sessionId/summary', authenticateToken, async (req, res) => {
+    try {
+        const { projectName, sessionId } = req.params;
+        const { summary } = req.body;
+
+        if (!summary || typeof summary !== 'string') {
+            return res.status(400).json({ error: 'Summary is required and must be a string' });
+        }
+
+        await updateSessionSummary(projectName, sessionId, summary);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error updating session summary:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -565,11 +622,19 @@ function handleChatConnection(ws) {
                     resume: true,
                     cwd: data.options?.cwd
                 }, ws);
+            } else if (data.type === 'codex-command') {
+                console.log('🤖 Codex message:', data.command || '[Continue/Resume]');
+                console.log('📁 Project:', data.options?.cwd || 'Unknown');
+                console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
+                console.log('🎯 Model:', data.options?.model || 'code-davinci-002');
+                await spawnCodex(data.command, data.options, ws);
             } else if (data.type === 'abort-session') {
                 console.log('🛑 Abort session request:', data.sessionId);
                 const provider = data.provider || 'claude';
-                const success = provider === 'cursor' 
+                const success = provider === 'cursor'
                     ? abortCursorSession(data.sessionId)
+                    : provider === 'codex'
+                    ? abortCodexSession(data.sessionId)
                     : abortClaudeSession(data.sessionId);
                 ws.send(JSON.stringify({
                     type: 'session-aborted',

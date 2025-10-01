@@ -41,8 +41,8 @@ export const api = {
   // Protected endpoints
   config: () => authenticatedFetch('/api/config'),
   projects: () => authenticatedFetch('/api/projects'),
-  sessions: (projectName, limit = 5, offset = 0) => 
-    authenticatedFetch(`/api/projects/${projectName}/sessions?limit=${limit}&offset=${offset}`),
+  sessions: (projectName, limit = 5, offset = 0, includeGlobal = true) =>
+    authenticatedFetch(`/api/projects/${projectName}/sessions?limit=${limit}&offset=${offset}&includeGlobal=${includeGlobal}`),
   sessionMessages: (projectName, sessionId, limit = null, offset = 0) => {
     const params = new URLSearchParams();
     if (limit !== null) {
@@ -61,6 +61,11 @@ export const api = {
   deleteSession: (projectName, sessionId) =>
     authenticatedFetch(`/api/projects/${projectName}/sessions/${sessionId}`, {
       method: 'DELETE',
+    }),
+  updateSessionSummary: (projectName, sessionId, summary) =>
+    authenticatedFetch(`/api/projects/${projectName}/sessions/${sessionId}/summary`, {
+      method: 'PUT',
+      body: JSON.stringify({ summary }),
     }),
   deleteProject: (projectName) =>
     authenticatedFetch(`/api/projects/${projectName}`, {

@@ -214,8 +214,9 @@ function AppContent() {
       const response = await api.projects();
       const data = await response.json();
       
-      // Always fetch Cursor sessions for each project so we can combine views
+      // Always fetch Cursor and Codex sessions for each project so we can combine views
       for (let project of data) {
+        // Fetch Cursor sessions
         try {
           const url = `/api/cursor/sessions?projectPath=${encodeURIComponent(project.fullPath || project.path)}`;
           const cursorResponse = await authenticatedFetch(url);
@@ -232,6 +233,25 @@ function AppContent() {
         } catch (error) {
           console.error(`Error fetching Cursor sessions for project ${project.name}:`, error);
           project.cursorSessions = [];
+        }
+
+        // Fetch Codex sessions
+        try {
+          const codexUrl = `/api/projects/${encodeURIComponent(project.name)}/sessions`;
+          const codexResponse = await authenticatedFetch(codexUrl);
+          if (codexResponse.ok) {
+            const codexData = await codexResponse.json();
+            if (codexData.success && codexData.codexSessions) {
+              project.codexSessions = codexData.codexSessions;
+            } else {
+              project.codexSessions = [];
+            }
+          } else {
+            project.codexSessions = [];
+          }
+        } catch (error) {
+          console.error(`Error fetching Codex sessions for project ${project.name}:`, error);
+          project.codexSessions = [];
         }
       }
       
@@ -254,7 +274,8 @@ function AppContent() {
             newProject.fullPath !== prevProject.fullPath ||
             JSON.stringify(newProject.sessionMeta) !== JSON.stringify(prevProject.sessionMeta) ||
             JSON.stringify(newProject.sessions) !== JSON.stringify(prevProject.sessions) ||
-            JSON.stringify(newProject.cursorSessions) !== JSON.stringify(prevProject.cursorSessions)
+            JSON.stringify(newProject.cursorSessions) !== JSON.stringify(prevProject.cursorSessions) ||
+            JSON.stringify(newProject.codexSessions) !== JSON.stringify(prevProject.codexSessions)
           );
         }) || data.length !== prevProjects.length;
         
@@ -325,12 +346,14 @@ function AppContent() {
       setActiveTab('chat');
     }
     
-    // For Cursor sessions, we need to set the session ID differently
-    // since they're persistent and not created by Claude
+    // Handle provider-specific session storage
     const provider = localStorage.getItem('selected-provider') || 'claude';
     if (provider === 'cursor') {
       // Cursor sessions have persistent IDs
       sessionStorage.setItem('cursorSessionId', session.id);
+    } else if (provider === 'codex') {
+      // Codex sessions have persistent IDs
+      sessionStorage.setItem('codexSessionId', session.id);
     }
     
     if (isMobile) {
